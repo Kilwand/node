@@ -26,28 +26,34 @@ namespace internal {
 struct TickSample;
 
 // Provides a mapping from the offsets within generated code or a bytecode array
-// to the source line.
+// to the source line and inlining id.
 class SourcePositionTable : public Malloced {
  public:
   SourcePositionTable() = default;
 
-  void SetPosition(int pc_offset, int line);
+  void SetPosition(int pc_offset, int line, int inlining_id);
   int GetSourceLineNumber(int pc_offset) const;
+  int GetInliningId(int pc_offset) const;
+
+  void print() const;
 
  private:
-  struct PCOffsetAndLineNumber {
-    bool operator<(const PCOffsetAndLineNumber& other) const {
+  struct SourcePositionTuple {
+    bool operator<(const SourcePositionTuple& other) const {
       return pc_offset < other.pc_offset;
     }
     int pc_offset;
     int line_number;
+    int inlining_id;
   };
-  // This is logically a map, but we store it as a vector of pairs, sorted by
+  // This is logically a map, but we store it as a vector of tuples, sorted by
   // the pc offset, so that we can save space and look up items using binary
   // search.
-  std::vector<PCOffsetAndLineNumber> pc_offsets_to_lines_;
+  std::vector<SourcePositionTuple> pc_offsets_to_lines_;
   DISALLOW_COPY_AND_ASSIGN(SourcePositionTable);
 };
+
+struct InlineEntry;
 
 class CodeEntry {
  public:
@@ -91,7 +97,7 @@ class CodeEntry {
   void mark_used() { bit_field_ = UsedField::update(bit_field_, true); }
   bool used() const { return UsedField::decode(bit_field_); }
 
-  void FillFunctionInfo(SharedFunctionInfo* shared);
+  void FillFunctionInfo(SharedFunctionInfo shared);
 
   void SetBuiltinId(Builtins::Name id);
   Builtins::Name builtin_id() const {
@@ -103,10 +109,9 @@ class CodeEntry {
 
   int GetSourceLine(int pc_offset) const;
 
-  void AddInlineStack(int pc_offset,
-                      std::vector<std::unique_ptr<CodeEntry>> inline_stack);
-  const std::vector<std::unique_ptr<CodeEntry>>* GetInlineStack(
-      int pc_offset) const;
+  void SetInlineStacks(
+      std::unordered_map<int, std::vector<InlineEntry>> inline_stacks);
+  const std::vector<InlineEntry>* GetInlineStack(int pc_offset) const;
 
   void set_instruction_start(Address start) { instruction_start_ = start; }
   Address instruction_start() const { return instruction_start_; }
@@ -136,13 +141,14 @@ class CodeEntry {
     return kUnresolvedEntry.Pointer();
   }
 
+  void print() const;
+
  private:
   struct RareData {
     const char* deopt_reason_ = kNoDeoptReason;
     const char* bailout_reason_ = kEmptyBailoutReason;
     int deopt_id_ = kNoDeoptimizationId;
-    std::unordered_map<int, std::vector<std::unique_ptr<CodeEntry>>>
-        inline_locations_;
+    std::unordered_map<int, std::vector<InlineEntry>> inline_locations_;
     std::vector<CpuProfileDeoptFrame> deopt_inlined_frames_;
   };
 
@@ -186,6 +192,15 @@ class CodeEntry {
   std::unique_ptr<RareData> rare_data_;
 
   DISALLOW_COPY_AND_ASSIGN(CodeEntry);
+};
+
+// Used to store information about inline call stacks - call_line_number is the
+// line number within the function represented by code_entry. Inlining
+// inherently happens at callsites, so this line number will always be the call
+// to the next inline/noninline frame.
+struct InlineEntry {
+  std::unique_ptr<CodeEntry> code_entry;
+  int call_line_number;
 };
 
 struct CodeEntryAndLineNumber {
@@ -412,7 +427,7 @@ class CpuProfilesCollection {
   std::vector<std::unique_ptr<CpuProfile>>* profiles() {
     return &finished_profiles_;
   }
-  const char* GetName(Name* name) { return resource_names_.GetName(name); }
+  const char* GetName(Name name) { return resource_names_.GetName(name); }
   bool IsLastProfile(const char* title);
   void RemoveProfile(CpuProfile* profile);
 
